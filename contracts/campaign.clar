@@ -14,6 +14,7 @@
 (define-constant ERR_INVALID_DESCRIPTION (err u110))
 (define-constant ERR_CAMPAIGN_ALREADY_EXISTS (err u111))
 (define-constant ERR_PLATFORM_FEE_EXCEEDS_LIMIT (err u112))
+(define-constant ERR_INVALID_PRINCIPAL (err u113))
 
 ;; Data variables
 (define-data-var contract-owner principal tx-sender)
@@ -47,6 +48,9 @@
 ;; Private functions
 (define-private (calculate-platform-fee (amount uint))
   (/ (* amount (var-get platform-fee-percent)) u100))
+
+(define-private (is-valid-principal (address principal))
+  (not (is-eq address 'SP000000000000000000002Q6VF78)))
 
 ;; Public functions
 (define-public (create-campaign 
@@ -85,7 +89,8 @@
 
 (define-public (contribute (campaign-id uint) (amount uint))
   (let (
-    (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) ERR_CAMPAIGN_NOT_FOUND))
+    (campaign-map-key { campaign-id: campaign-id })
+    (campaign (unwrap! (map-get? campaigns campaign-map-key) ERR_CAMPAIGN_NOT_FOUND))
     (current-amount (get current-amount campaign))
     (deadline (get deadline campaign))
     (platform-fee (calculate-platform-fee amount))
@@ -101,7 +106,7 @@
     (match (stx-transfer? total-amount tx-sender (as-contract tx-sender))
       success (begin
         ;; Update campaign amount
-        (map-set campaigns { campaign-id: campaign-id }
+        (map-set campaigns campaign-map-key
           (merge campaign { current-amount: (+ current-amount amount) })
         )
         
@@ -129,7 +134,8 @@
 
 (define-public (claim-funds (campaign-id uint))
   (let (
-    (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) ERR_CAMPAIGN_NOT_FOUND))
+    (campaign-map-key { campaign-id: campaign-id })
+    (campaign (unwrap! (map-get? campaigns campaign-map-key) ERR_CAMPAIGN_NOT_FOUND))
     (creator (get creator campaign))
     (current-amount (get current-amount campaign))
     (goal-amount (get goal-amount campaign))
@@ -145,7 +151,7 @@
     (match (as-contract (stx-transfer? current-amount tx-sender creator))
       success (begin
         ;; Mark campaign as claimed
-        (map-set campaigns { campaign-id: campaign-id }
+        (map-set campaigns campaign-map-key
           (merge campaign { claimed: true })
         )
         
@@ -161,7 +167,8 @@
 
 (define-public (request-refund (campaign-id uint))
   (let (
-    (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) ERR_CAMPAIGN_NOT_FOUND))
+    (campaign-map-key { campaign-id: campaign-id })
+    (campaign (unwrap! (map-get? campaigns campaign-map-key) ERR_CAMPAIGN_NOT_FOUND))
     (current-amount (get current-amount campaign))
     (goal-amount (get goal-amount campaign))
     (deadline (get deadline campaign))
@@ -184,7 +191,7 @@
         )
         
         ;; Update campaign amount
-        (map-set campaigns { campaign-id: campaign-id }
+        (map-set campaigns campaign-map-key
           (merge campaign { current-amount: (- current-amount contribution-amount) })
         )
         
@@ -220,6 +227,7 @@
 (define-public (transfer-ownership (new-owner principal))
   (begin
     (asserts! (is-eq tx-sender (var-get contract-owner)) ERR_UNAUTHORIZED)
+    (asserts! (is-valid-principal new-owner) ERR_INVALID_PRINCIPAL)
     (ok (var-set contract-owner new-owner))))
 
 ;; Read-only functions
@@ -245,4 +253,3 @@
 
 (define-read-only (get-campaign-count)
   (- (var-get next-campaign-id) u1))
-
