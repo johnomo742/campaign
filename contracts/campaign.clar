@@ -83,6 +83,120 @@
     (print { event: "campaign-created", campaign-id: campaign-id, creator: tx-sender, goal: goal-amount })
     (ok campaign-id)))
 
+(define-public (contribute (campaign-id uint) (amount uint))
+  (let (
+    (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) ERR_CAMPAIGN_NOT_FOUND))
+    (current-amount (get current-amount campaign))
+    (deadline (get deadline campaign))
+    (platform-fee (calculate-platform-fee amount))
+    (contribution-key { campaign-id: campaign-id, contributor: tx-sender })
+    (existing-contribution (default-to { amount: u0, refunded: false } 
+                              (map-get? contributions contribution-key)))
+    (total-amount (+ amount platform-fee))
+  )
+    (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+    (asserts! (< block-height deadline) ERR_DEADLINE_PASSED)
+    
+    ;; Transfer STX from sender to contract
+    (match (stx-transfer? total-amount tx-sender (as-contract tx-sender))
+      success (begin
+        ;; Update campaign amount
+        (map-set campaigns { campaign-id: campaign-id }
+          (merge campaign { current-amount: (+ current-amount amount) })
+        )
+        
+        ;; Update contribution record
+        (map-set contributions contribution-key
+          { 
+            amount: (+ (get amount existing-contribution) amount),
+            refunded: false
+          }
+        )
+        
+        ;; Add platform fee to treasury
+        (var-set platform-treasury (+ (var-get platform-treasury) platform-fee))
+        
+        (print { 
+          event: "contribution-made", 
+          campaign-id: campaign-id, 
+          contributor: tx-sender, 
+          amount: amount,
+          platform-fee: platform-fee
+        })
+        
+        (ok true))
+      error (err error))))
+
+(define-public (claim-funds (campaign-id uint))
+  (let (
+    (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) ERR_CAMPAIGN_NOT_FOUND))
+    (creator (get creator campaign))
+    (current-amount (get current-amount campaign))
+    (goal-amount (get goal-amount campaign))
+    (deadline (get deadline campaign))
+    (claimed (get claimed campaign))
+  )
+    (asserts! (is-eq tx-sender creator) ERR_UNAUTHORIZED)
+    (asserts! (>= block-height deadline) ERR_DEADLINE_NOT_REACHED)
+    (asserts! (>= current-amount goal-amount) ERR_GOAL_NOT_REACHED)
+    (asserts! (not claimed) ERR_ALREADY_CLAIMED)
+    
+    ;; Transfer funds to creator
+    (match (as-contract (stx-transfer? current-amount tx-sender creator))
+      success (begin
+        ;; Mark campaign as claimed
+        (map-set campaigns { campaign-id: campaign-id }
+          (merge campaign { claimed: true })
+        )
+        
+        (print { 
+          event: "funds-claimed", 
+          campaign-id: campaign-id, 
+          creator: creator, 
+          amount: current-amount
+        })
+        
+        (ok current-amount))
+      error (err error))))
+
+(define-public (request-refund (campaign-id uint))
+  (let (
+    (campaign (unwrap! (map-get? campaigns { campaign-id: campaign-id }) ERR_CAMPAIGN_NOT_FOUND))
+    (current-amount (get current-amount campaign))
+    (goal-amount (get goal-amount campaign))
+    (deadline (get deadline campaign))
+    (contribution-key { campaign-id: campaign-id, contributor: tx-sender })
+    (contribution (unwrap! (map-get? contributions contribution-key) ERR_UNAUTHORIZED))
+    (contribution-amount (get amount contribution))
+    (refunded (get refunded contribution))
+  )
+    (asserts! (>= block-height deadline) ERR_DEADLINE_NOT_REACHED)
+    (asserts! (< current-amount goal-amount) ERR_GOAL_NOT_REACHED)
+    (asserts! (not refunded) ERR_ALREADY_REFUNDED)
+    (asserts! (> contribution-amount u0) ERR_INVALID_AMOUNT)
+    
+    ;; Transfer refund to contributor
+    (match (as-contract (stx-transfer? contribution-amount tx-sender tx-sender))
+      success (begin
+        ;; Update contribution as refunded
+        (map-set contributions contribution-key
+          (merge contribution { refunded: true })
+        )
+        
+        ;; Update campaign amount
+        (map-set campaigns { campaign-id: campaign-id }
+          (merge campaign { current-amount: (- current-amount contribution-amount) })
+        )
+        
+        (print { 
+          event: "refund-processed", 
+          campaign-id: campaign-id, 
+          contributor: tx-sender, 
+          amount: contribution-amount
+        })
+        
+        (ok contribution-amount))
+      error (err error))))
 
 ;; Admin functions
 (define-public (withdraw-platform-fees)
